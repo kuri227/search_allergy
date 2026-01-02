@@ -14,12 +14,13 @@ const CX = process.env.GOOGLE_CX;
 
 // ==== Search for official site using Google Custom Search API ====
 async function findOfficialSite(chainName) {
-  const query = `${chainName} official site`;
-  const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${CX}&q=${encodeURIComponent(query)}`;
+  // site:.co.jp で日本のドメインに限定
+  const query = `${chainName} site:.co.jp`;
+  const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${CX}&q=${encodeURIComponent(query)}&gl=jp`;
 
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTPエラー: ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
     const data = await res.json();
 
     if (!data.items || data.items.length === 0) {
@@ -366,33 +367,50 @@ async function saveUrlCache(cache) {
   await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
 }
 
-// Function to normalize URL
-function normalizeUrl(url) {
-  try {
-    const urlObj = new URL(url);
-    // Return protocol + hostname only
-    return `${urlObj.protocol}//${urlObj.hostname}`;
-  } catch (err) {
-    console.error('[ERROR] Invalid URL:', url);
-    return url;
-  }
-}
-
-// Update getOfficialSiteUrl function
+// Update getOfficialSiteUrl function to handle new cache structure
 async function getOfficialSiteUrl(chainName) {
   const cache = await loadUrlCache();
   
-  if (cache[chainName]) {
-    console.log('[INFO] Using cached URL');
-    return cache[chainName];
+  // Check if cache entry exists and has official_site property
+  if (cache[chainName] && cache[chainName].official_site) {
+    console.log('[INFO] Using cached official site URL');
+    return cache[chainName].official_site;
   }
 
   const url = await findOfficialSite(chainName);
   if (url) {
-    cache[chainName] = url;
+    // Initialize or update cache entry
+    if (!cache[chainName]) {
+      cache[chainName] = {};
+    }
+    cache[chainName].official_site = url;
     await saveUrlCache(cache);
   }
   return url;
+}
+
+// Function to get cached PDF links
+async function getCachedPdfLinks(chainName) {
+  const cache = await loadUrlCache();
+  
+  if (cache[chainName] && cache[chainName].pdf_links && cache[chainName].pdf_links.length > 0) {
+    console.log(`[INFO] Using cached PDF links (${cache[chainName].pdf_links.length} PDFs)`);
+    return cache[chainName].pdf_links;
+  }
+  
+  return null;
+}
+
+// Function to save PDF links to cache
+async function savePdfLinksToCache(chainName, pdfLinks) {
+  const cache = await loadUrlCache();
+  
+  if (!cache[chainName]) {
+    cache[chainName] = {};
+  }
+  
+  cache[chainName].pdf_links = pdfLinks;
+  await saveUrlCache(cache);
 }
 
 // Update getRobotsRules function to support caching
@@ -453,9 +471,14 @@ async function main() {
 
   console.log(`[INFO] Official site: ${officialSiteUrl}`);
 
-  // Search for PDFs
-  console.log('[INFO] Searching for PDFs...');
-  const pdfLinks = await findAllergyPDFs(officialSiteUrl);
+  // Try to get cached PDF links first
+  let pdfLinks = await getCachedPdfLinks(chainName);
+
+  // If no cached PDFs, search for them
+  if (!pdfLinks) {
+    console.log('[INFO] Searching for PDFs...');
+    pdfLinks = await findAllergyPDFs(officialSiteUrl);
+  }
   
   if (pdfLinks.length === 0) {
     console.log('[INFO] No PDFs found.');
@@ -480,6 +503,11 @@ async function main() {
       // Generate timestamp (YYYY-MM-DDTHH-MM-SS format)
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
       const normalizedChainName = chainName.replace(/\s+/g, '_');
+
+      // Save only selected PDFs to cache
+      const selectedPdfs = selectedIndices.map(idx => pdfLinks[idx]);
+      await savePdfLinksToCache(chainName, selectedPdfs);
+      console.log(`[INFO] Saved ${selectedPdfs.length} selected PDF links to cache`);
 
       // Download selected PDFs
       for (const idx of selectedIndices) {
