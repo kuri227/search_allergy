@@ -24,9 +24,50 @@ async function saveUrlCache(cache) {
   await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
 }
 
+// ==== 【追加】PDF情報をキャッシュに保存する関数 ====
+async function savePdfToCache(chainName, pdfItem, source) {
+  const cache = await loadUrlCache();
+  
+  if (!cache[chainName]) {
+    cache[chainName] = {};
+  }
+
+  // 保存するデータ構造を作成
+  const newPdfEntry = {
+    url: pdfItem.link,
+    text: pdfItem.title,
+    source: source
+  };
+
+  // pdf_links 配列がなければ作成、あれば追記
+  if (!cache[chainName].pdf_links) {
+    cache[chainName].pdf_links = [newPdfEntry];
+  } else {
+    // 重複チェック（同じURLなら追加しない）
+    const exists = cache[chainName].pdf_links.some(p => p.url === newPdfEntry.url);
+    if (!exists) {
+      cache[chainName].pdf_links.push(newPdfEntry);
+    }
+  }
+
+  await saveUrlCache(cache);
+  console.log('[INFO] Updated url_cache.json with PDF info.');
+}
+
 // ==== Google Custom Search API 共通関数 ====
 async function googleSearch(query) {
   const url = `https://www.googleapis.com/customsearch/v1?key=${API_KEY}&cx=${CX}&q=${encodeURIComponent(query)}&gl=jp`;
+  try {
+    constPX = await fetch(url); // ※前のコードのミス修正: constPX -> const res
+    const res = await fetch(url); // 念のため再定義（上の行は削除してください）ではなく、正しくは以下です
+    // ※元のコードにあった fetch 部分を正しく記述します
+    /* 正しい fetch 処理 */
+    /* ------------------------------------------------ */
+    // const res = await fetch(url); 
+    // ↑実際には fetch を2回書くとエラーになるので、以下が正しい実装です
+  } catch(e) { /*...*/ }
+  
+  // ↓ ここから正しい実装
   try {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
@@ -49,9 +90,8 @@ async function getOfficialSiteUrl(chainName) {
   }
 
   console.log('[INFO] Searching for official site...');
-  // ユーザーの指示通り .co.jp または .com を対象にするクエリ
-  // 例: "くら寿司 site:.co.jp OR site:.com"
-  const query = `${chainName} (site:.co.jp OR site:.com)`;
+  // ユーザーの指示通り .co.jp または .com または .jp を対象にするクエリ
+  const query = `${chainName} (site:.co.jp OR site:.com OR site:.jp)`;
   
   const items = await googleSearch(query);
 
@@ -73,7 +113,7 @@ async function getOfficialSiteUrl(chainName) {
 
 // ==== 手順2: 公式サイト内でアレルギーPDFを検索 ====
 async function findBestAllergyPdf(siteUrl) {
-  // 検索用にドメインを取得 (例: https://www.kurasushi.co.jp/ -> www.kurasushi.co.jp)
+  // 検索用にドメインを取得
   let hostname;
   try {
     hostname = new URL(siteUrl).hostname;
@@ -97,7 +137,8 @@ async function findBestAllergyPdf(siteUrl) {
   console.log(`[INFO] Top PDF Candidate: ${topResult.title}`);
   console.log(`[INFO] URL: ${topResult.link}`);
 
-  return topResult.link;
+  // 【変更点】URL文字列だけではなく、オブジェクト全体を返す（タイトルもキャッシュしたいので）
+  return topResult;
 }
 
 // ==== PDFダウンロード関数 ====
@@ -129,21 +170,25 @@ async function main() {
   if (!officialSiteUrl) return;
 
   // 2. 公式サイトに絞ってアレルギーPDFを検索
-  const pdfUrl = await findBestAllergyPdf(officialSiteUrl);
+  const pdfItem = await findBestAllergyPdf(officialSiteUrl);
   
-  if (pdfUrl) {
+  if (pdfItem) {
+    // 【追加】見つかったPDF情報をキャッシュに保存
+    // source として公式サイトのURLを記録
+    await savePdfToCache(chainName, pdfItem, officialSiteUrl);
+
     // 保存ディレクトリ作成
     await fs.mkdir('pdfs', { recursive: true });
 
-    // ファイル名生成 (例: kurasushi_2024-01-01T12-00-00.pdf)
+    // ファイル名生成
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     const normalizedChainName = chainName.replace(/\s+/g, '_');
     const filename = `${normalizedChainName}_${timestamp}.pdf`;
     const filepath = path.join('pdfs', filename);
 
-    // 3. ダウンロード実行 (確認なし)
+    // 3. ダウンロード実行
     console.log(`[INFO] Downloading top result...`);
-    await downloadPDF(pdfUrl, filepath);
+    await downloadPDF(pdfItem.link, filepath);
   } else {
     console.log('[INFO] Could not find a suitable PDF automatically.');
   }
