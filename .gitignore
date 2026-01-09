@@ -3,3 +3,4 @@ node_modules/
 pdfs/
 url_cache.json
 fix_cache.js
+index.js
